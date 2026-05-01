@@ -12,27 +12,44 @@ KEY = st.secrets["supabase"]["key"]
 supabase: Client = create_client(URL, KEY)
 
 COURSES = ["DMLT", "OT Technician", "X-Ray Technician", "First Aid and Patient Care"]
-YEARS = ["1st Year", "2nd Year", "3rd Year"]
-# Academic Session Cycle
-SESSION_MONTHS = ["May", "June", "July", "August", "September", "October", "November", "December", 
-                  "January", "February", "March", "April"]
+YEARS = ["1st Year", "2nd Year"]
+STANDARD_MONTHS = ["January", "February", "March", "April", "May", "June", 
+                   "July", "August", "September", "October", "November", "December"]
 
 def fetch_students():
     res = supabase.table("students").select("*").execute()
     return pd.DataFrame(res.data)
 
-def get_monthly_report(student_id):
-    """Checks which months are paid in the fee_records table."""
+def get_monthly_report(student_id, current_year_status):
+    """Generates a dynamic month list based on the student's year of study."""
     res = supabase.table("fee_records").select("month, year").eq("student_id", student_id).execute()
     paid_list = [f"{r['month']} {r['year']}" for r in res.data]
     
     report = []
-    for m in SESSION_MONTHS:
-        # Simple logic: May-Dec is 2026, Jan-Apr is 2027
-        yr = "2026" if m in SESSION_MONTHS[:8] else "2027"
+    
+    # Logic for 1st Year (2 Years: May 2026 - May 2028)
+    if current_year_status == "1st Year":
+        timeline = [
+            (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"]
+        ] + [
+            (m, "2027") for m in STANDARD_MONTHS
+        ] + [
+            (m, "2028") for m in ["January", "February", "March", "April", "May"]
+        ]
+    
+    # Logic for 2nd Year (1 Year: May 2026 - May 2027)
+    else:
+        timeline = [
+            (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"]
+        ] + [
+            (m, "2027") for m in ["January", "February", "March", "April", "May"]
+        ]
+
+    for m, yr in timeline:
         label = f"{m} {yr}"
         status = "✅ Paid" if label in paid_list else "❌ Pending"
         report.append({"Month": label, "Status": status})
+        
     return report
 
 # --- 2. RECEIPT GENERATOR ---
@@ -40,9 +57,7 @@ def create_receipt(s_info, bill):
     pdf = FPDF()
     pdf.add_page()
     pdf.rect(5, 5, 200, 185)
-    
-    if os.path.exists("logo.png"):
-        pdf.image("logo.png", 10, 10, 25)
+    if os.path.exists("logo.png"): pdf.image("logo.png", 10, 10, 25)
     
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "OXFORD SKILL DEVELOPMENT CENTRE", ln=True, align='C')
@@ -60,7 +75,7 @@ def create_receipt(s_info, bill):
     pdf.cell(95, 8, f"Name: {s_info['name']}")
     pdf.cell(95, 8, f"ID: {s_info['id']}", ln=True)
     pdf.cell(95, 8, f"Stream: {s_info['stream']}")
-    pdf.cell(95, 8, f"Academic Year: {s_info['year_of_study']}", ln=True)
+    pdf.cell(95, 8, f"Year: {s_info['year_of_study']}", ln=True)
     pdf.ln(5)
     
     pdf.set_font("Arial", 'B', 10)
@@ -73,9 +88,8 @@ def create_receipt(s_info, bill):
         ("Admission Fees", bill['adm']),
         ("Exam Fees", bill['exam']),
         (f"Monthly Fees ({bill['m']} {bill['y']})", bill['mon']),
-        ("Fine / Late Penalty", bill['fine'])
+        ("Late Fine / Penalty", bill['fine'])
     ]
-    
     for desc, amt in fees:
         if int(amt) > 0:
             pdf.cell(140, 8, desc, border=1)
@@ -85,11 +99,9 @@ def create_receipt(s_info, bill):
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(140, 10, "GRAND TOTAL", border=1)
     pdf.cell(50, 10, f"INR {total}/-", border=1, ln=True, align='C')
-    
     pdf.ln(20)
     pdf.cell(95, 10, "Student Signature")
     pdf.cell(95, 10, "Office Seal & Signature", ln=True, align='R')
-    
     return pdf.output(dest='S').encode('latin-1'), r_no, total
 
 # --- 3. MAIN APP ---
@@ -118,80 +130,54 @@ else:
         st.rerun()
 
     if st.session_state.auth["role"] == "admin":
-        st.title("🛡️ Institutional Admin Dashboard")
+        st.title("🛡️ Admin Dashboard")
         df = fetch_students()
         
-        t1, t2, t3 = st.tabs(["🆕 Enrollment", "💳 Billing & Fines", "📋 Monthly Records"])
+        t1, t2, t3 = st.tabs(["🆕 Enrollment", "💳 Billing", "📋 Monthly Records"])
         
         with t1:
             with st.form("enroll"):
                 c1, c2, c3 = st.columns(3)
-                sid = c1.text_input("Student ID")
-                sname = c2.text_input("Full Name")
-                sphone = c3.text_input("Phone")
-                stream = c1.selectbox("Stream", COURSES)
-                year = c2.selectbox("Year", YEARS)
-                spass = c3.text_input("Password")
+                sid, sname, sphone = c1.text_input("ID"), c2.text_input("Name"), c3.text_input("Phone")
+                stream, year, spass = c1.selectbox("Stream", COURSES), c2.selectbox("Year", YEARS), c3.text_input("Password")
                 if st.form_submit_button("Register"):
                     supabase.table("students").insert({"id": sid, "name": sname, "pass": spass, "phone": sphone, "stream": stream, "year_of_study": year, "status": "Pending"}).execute()
-                    st.success("Enrolled!")
-                    st.rerun()
+                    st.success("Enrolled!"); st.rerun()
 
         with t2:
             if not df.empty:
                 target = st.selectbox("Select Student", df['id'].tolist())
                 s_info = df[df['id'] == target].iloc[0]
-                
                 print_spot = st.container()
                 with st.form("billing"):
                     ca, cb = st.columns(2)
-                    adm = ca.number_input("Admission Fee", 0)
-                    exm = cb.number_input("Exam Fee", 0)
-                    mon = ca.number_input("Monthly Fee", 0)
-                    fine = cb.number_input("Fine", 0)
-                    sel_m = ca.selectbox("For Month", SESSION_MONTHS)
+                    adm, exm, mon, fine = ca.number_input("Admission Fee", 0), cb.number_input("Exam Fee", 0), ca.number_input("Monthly Fee", 0), cb.number_input("Fine", 0)
+                    sel_m = ca.selectbox("For Month", STANDARD_MONTHS)
                     sel_y = cb.selectbox("For Year", ["2026", "2027", "2028"])
-                    
                     if st.form_submit_button("Generate Receipt"):
                         bill = {"adm": adm, "exam": exm, "mon": mon, "fine": fine, "m": sel_m, "y": sel_y}
                         pdf, r_no, total = create_receipt(s_info, bill)
-                        
-                        # 1. Update Student Overall Status
-                        supabase.table("students").update({"status": "Paid", "amount_paid": str(total)}).eq("id", target).execute()
-                        
-                        # 2. Insert into Monthly Tracking Table
-                        supabase.table("fee_records").insert({
-                            "student_id": target, "month": sel_m, "year": sel_y, 
-                            "amount_paid": str(mon), "receipt_no": r_no
-                        }).execute()
-                        
+                        supabase.table("fee_records").insert({"student_id": target, "month": sel_m, "year": sel_y, "amount_paid": str(mon), "receipt_no": r_no}).execute()
                         st.success(f"Receipt {r_no} Generated!")
-                        print_spot.download_button("🖨️ Print Receipt", pdf, f"Rec_{target}_{sel_m}.pdf")
+                        print_spot.download_button("🖨️ Print Receipt", pdf, f"Rec_{target}.pdf")
 
         with t3:
             st.subheader("Monthly Payment Tracking Sheet")
             for _, row in df.iterrows():
-                with st.expander(f"👤 {row['id']} - {row['name']} ({row['stream']})"):
-                    report = get_monthly_report(row['id'])
+                with st.expander(f"👤 {row['id']} - {row['name']} ({row['year_of_study']})"):
+                    report = get_monthly_report(row['id'], row['year_of_study'])
                     cols = st.columns(4)
                     for i, item in enumerate(report):
                         with cols[i % 4]:
-                            if "Pending" in item['Status']:
-                                st.error(f"**{item['Month']}**\n\n{item['Status']}")
-                            else:
-                                st.success(f"**{item['Month']}**\n\n{item['Status']}")
+                            if "Pending" in item['Status']: st.error(f"**{item['Month']}**")
+                            else: st.success(f"**{item['Month']}**")
 
     else:
         # Student View
         u = st.session_state.auth["user"]
         st.title(f"👋 Student Portal: {u['name']}")
-        report = get_monthly_report(u['id'])
-        
+        report = get_monthly_report(u['id'], u['year_of_study'])
         st.subheader("Your Fee Status")
         cols = st.columns(6)
         for i, item in enumerate(report):
             cols[i % 6].write(f"{item['Month']}\n{item['Status']}")
-        
-        if st.button("Download Latest Admit Card"):
-            pdf, _, _ = create_receipt(u, {"adm": 0, "exam": 0, "mon": 0, "fine": 0, "m": "N/A", "y": ""})
-            st.download_button("Download", pdf, "Admit_Card.pdf")
