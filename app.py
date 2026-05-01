@@ -109,5 +109,18 @@ else:
             st.error("Fees Pending - Access Locked")
         else:
             if st.button("Download Admit Card"):
+                def get_gspread_client():
+    # Make a copy of the secret info
+    info = dict(st.secrets["gcp_service_account"])
+    
+    # CRITICAL FIX: Ensure the \n characters are actual newlines
+    if "private_key" in info:
+        info["private_key"] = info["private_key"].replace("\\n", "\n")
+        
+    creds = Credentials.from_service_account_info(
+        info, 
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
                 pdf = create_pdf("ADMIT CARD", u['name'], u['id'], {"Exam": "Term Finals 2026"})
                 st.download_button("Download", pdf, f"Admit_{u['id']}.pdf")
