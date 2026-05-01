@@ -1,5 +1,5 @@
 streamlit
-gspread
+supabase
 pandas
 fpdf
-google-auth
+postgrest
