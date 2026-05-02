@@ -13,182 +13,190 @@ supabase: Client = create_client(URL, KEY)
 
 COURSES = ["DMLT", "OT Technician", "X-Ray Technician", "First Aid and Patient Care"]
 YEARS = ["1st Year", "2nd Year"]
-STANDARD_MONTHS = ["January", "February", "March", "April", "May", "June", 
-                   "July", "August", "September", "October", "November", "December"]
+MONTHS = ["January", "February", "March", "April", "May", "June", 
+          "July", "August", "September", "October", "November", "December"]
 
-def fetch_students():
-    try:
-        res = supabase.table("students").select("*").execute()
-        return pd.DataFrame(res.data)
-    except:
-        return pd.DataFrame()
+# --- 2. DATABASE HELPERS ---
+def fetch_data(table):
+    res = supabase.table(table).select("*").execute()
+    return pd.DataFrame(res.data)
 
-def get_monthly_report(student_id, current_year_status):
-    try:
-        res = supabase.table("fee_records").select("month, year").eq("student_id", student_id).execute()
-        paid_list = [f"{r['month']} {r['year']}" for r in res.data]
-    except:
-        paid_list = []
-    
+def get_monthly_report(student_id, year_status):
+    res = supabase.table("fee_records").select("month, year").eq("student_id", student_id).execute()
+    paid_list = [f"{r['month']} {r['year']}" for r in res.data]
     report = []
-    if current_year_status == "1st Year":
-        timeline = [ (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"] ] + \
-                   [ (m, "2027") for m in STANDARD_MONTHS ] + \
-                   [ (m, "2028") for m in ["January", "February", "March", "April", "May"] ]
+    if year_status == "1st Year":
+        timeline = [(m, "2026") for m in MONTHS[4:]] + [(m, "2027") for m in MONTHS] + [(m, "2028") for m in MONTHS[:5]]
     else:
-        timeline = [ (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"] ] + \
-                   [ (m, "2027") for m in ["January", "February", "March", "April", "May"] ]
-
+        timeline = [(m, "2026") for m in MONTHS[4:]] + [(m, "2027") for m in MONTHS[:5]]
     for m, yr in timeline:
         label = f"{m} {yr}"
         report.append({"label": label, "status": "PAID" if label in paid_list else "PENDING"})
     return report
 
-# --- 2. RECEIPT GENERATOR ---
-def create_receipt(s_info, bill):
-    pdf = FPDF()
+# --- 3. ID CARD GENERATOR ---
+def create_id_card(s_info, photo_url=None):
+    pdf = FPDF(format=(54, 86)) # Standard ID CR80 size in mm
     pdf.add_page()
-    pdf.rect(5, 5, 200, 185)
-    if os.path.exists("logo.png"): pdf.image("logo.png", 10, 10, 25)
     
-    pdf.set_font("Arial", 'B', 18)
-    pdf.cell(190, 10, "OXFORD SKILL DEVELOPMENT CENTRE", ln=True, align='C')
-    pdf.set_font("Arial", '', 10)
-    pdf.cell(190, 5, "Dhupdhara, Assam | Skill Development & Paramedical Training", ln=True, align='C')
-    pdf.ln(15)
+    # Background Color Header
+    pdf.set_fill_color(0, 51, 102) # Oxford Blue
+    pdf.rect(0, 0, 54, 20, 'F')
     
-    r_no = f"OSDC-{random.randint(100000, 999999)}"
-    pdf.set_fill_color(230, 230, 230)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 10, f"OFFICIAL FEES RECEIPT - {r_no}", ln=True, align='C', fill=True)
-    pdf.ln(5)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", 'B', 8)
+    pdf.text(5, 8, "OXFORD SKILL")
+    pdf.text(5, 12, "DEVELOPMENT CENTRE")
     
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(95, 8, f"Name: {s_info['name']}")
-    pdf.cell(95, 8, f"ID: {s_info['id']}", ln=True)
-    pdf.cell(95, 8, f"Course: {s_info['stream']}")
-    pdf.cell(95, 8, f"Session Year: {s_info['year_of_study']}", ln=True)
-    pdf.ln(5)
+    # Photo Placeholder or Real Photo
+    pdf.set_fill_color(240, 240, 240)
+    if photo_url:
+        try: pdf.image(photo_url, 17, 22, 20, 25)
+        except: pdf.rect(17, 22, 20, 25, 'F')
+    else:
+        pdf.rect(17, 22, 20, 25, 'F')
+        
+    # Student Details
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.text(5, 55, s_info['name'].upper())
     
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(140, 8, "Description", border=1, fill=True)
-    pdf.cell(50, 8, "Amount (INR)", border=1, ln=True, align='C', fill=True)
+    pdf.set_font("Arial", '', 7)
+    pdf.text(5, 60, f"ID: {s_info['id']}")
+    pdf.text(5, 64, f"Course: {s_info['stream']}")
+    pdf.text(5, 68, f"Valid Till: May 2028")
     
-    pdf.set_font("Arial", '', 10)
-    total = 0
-    fees = [("Admission Fees", bill['adm']), ("Exam Fees", bill['exam']), 
-            (f"Monthly Fee ({bill['m']} {bill['y']})", bill['mon']), ("Late Fine / Penalty", bill['fine'])]
-    for desc, amt in fees:
-        if int(amt) > 0:
-            pdf.cell(140, 8, desc, border=1)
-            pdf.cell(50, 8, f"{amt}/-", border=1, ln=True, align='C')
-            total += int(amt)
-            
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(140, 10, "GRAND TOTAL PAID", border=1)
-    pdf.cell(50, 10, f"INR {total}/-", border=1, ln=True, align='C')
-    pdf.ln(20)
-    pdf.cell(95, 10, "Signature of Student")
-    pdf.cell(95, 10, "Authorized Signatory", ln=True, align='R')
-    return pdf.output(dest='S').encode('latin-1'), r_no, total
+    # Footer
+    pdf.set_fill_color(0, 51, 102)
+    pdf.rect(0, 80, 54, 6, 'F')
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", '', 6)
+    pdf.text(15, 84, "www.oxfordskill.com")
+    
+    return pdf.output(dest='S').encode('latin-1')
 
-# --- 3. MAIN APP ---
-st.set_page_config(page_title="Oxford ERP", layout="wide")
+# --- 4. LOGIN LOGIC ---
+st.set_page_config(page_title="Oxford ERP v3.0", layout="wide")
 
 if 'auth' not in st.session_state:
     st.session_state.auth = {"logged_in": False, "role": None, "user": None}
 
 if not st.session_state.auth["logged_in"]:
     st.title("🎓 Oxford Skill Development Centre")
+    role_sel = st.radio("Login As:", ["Student", "Teacher", "Admin"], horizontal=True)
     uid = st.text_input("User ID")
     pwd = st.text_input("Password", type="password")
-    if st.button("Login", use_container_width=True):
-        if uid == "admin" and pwd == "oxford2026":
+    
+    if st.button("Access Portal", use_container_width=True):
+        if role_sel == "Admin" and uid == "admin" and pwd == "oxford2026":
             st.session_state.auth = {"logged_in": True, "role": "admin", "user": "Admin"}
             st.rerun()
+        elif role_sel == "Teacher":
+            res = supabase.table("teachers").select("*").eq("id", uid).eq("pass", pwd).execute()
+            if res.data:
+                st.session_state.auth = {"logged_in": True, "role": "teacher", "user": res.data[0]}
+                st.rerun()
         else:
-            try:
-                res = supabase.table("students").select("*").eq("id", uid).eq("pass", pwd).execute()
-                if res.data:
-                    st.session_state.auth = {"logged_in": True, "role": "student", "user": res.data[0]}
-                    st.rerun()
-                else: st.error("Invalid Credentials")
-            except: st.error("Database Connection Error")
+            res = supabase.table("students").select("*").eq("id", uid).eq("pass", pwd).execute()
+            if res.data:
+                st.session_state.auth = {"logged_in": True, "role": "student", "user": res.data[0]}
+                st.rerun()
+        st.error("Invalid Login")
 
 else:
-    if st.sidebar.button("Logout"):
-        st.session_state.auth = {"logged_in": False, "role": None, "user": None}
-        st.rerun()
-
+    # --- ADMIN VIEW ---
     if st.session_state.auth["role"] == "admin":
-        st.title("🛡️ Admin Management System")
-        df = fetch_students()
+        st.title("🛡️ Super Admin Control")
+        df = fetch_data("students")
         
-        # ADDED "STUDENT RECORDS" TAB HERE
-        t1, t2, t3, t4 = st.tabs(["🆕 Enrollment", "💳 Billing", "📋 Monthly Tracking", "📂 Student Records"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Enrollment", "Staff Management", "ID Card Setup", "Records"])
         
-        with t1:
+        with tab1:
             with st.form("enroll"):
                 c1, c2, c3 = st.columns(3)
-                sid, sname, sphone = c1.text_input("Student ID"), c2.text_input("Name"), c3.text_input("Phone")
-                stream, year, spass = c1.selectbox("Stream", COURSES), c2.selectbox("Current Year", YEARS), c3.text_input("Password")
+                sid, sname, sphone = c1.text_input("ID"), c2.text_input("Name"), c3.text_input("Phone")
+                stream, year, spass = c1.selectbox("Stream", COURSES), c2.selectbox("Year", YEARS), c3.text_input("Pass")
                 if st.form_submit_button("Register"):
                     supabase.table("students").insert({"id": sid, "name": sname, "pass": spass, "phone": sphone, "stream": stream, "year_of_study": year, "status": "Pending"}).execute()
-                    st.success("Enrolled!"); st.rerun()
+                    st.success("Registered!"); st.rerun()
 
-        with t2:
-            if not df.empty:
-                target = st.selectbox("Select Student", df['id'].tolist())
-                s_info = df[df['id'] == target].iloc[0]
-                print_spot = st.container()
-                with st.form("billing"):
-                    ca, cb = st.columns(2)
-                    adm, exm, mon, fine = ca.number_input("Admission Fee", 0), cb.number_input("Exam Fee", 0), ca.number_input("Monthly Fee", 0), cb.number_input("Fine", 0)
-                    sel_m, sel_y = ca.selectbox("Month", STANDARD_MONTHS, index=4), cb.selectbox("Year", ["2026", "2027", "2028"])
-                    if st.form_submit_button("Generate Receipt"):
-                        bill = {"adm": adm, "exam": exm, "mon": mon, "fine": fine, "m": sel_m, "y": sel_y}
-                        pdf, r_no, total = create_receipt(s_info, bill)
-                        supabase.table("fee_records").insert({"student_id": target, "month": sel_m, "year": sel_y, "amount_paid": str(mon), "receipt_no": r_no}).execute()
-                        st.success(f"Receipt {r_no} Generated!")
-                        print_spot.download_button("🖨️ Print Receipt", pdf, f"Rec_{target}.pdf")
+        with tab2:
+            st.subheader("Manage Teachers")
+            with st.form("teacher_reg"):
+                t_id, t_name, t_pass = st.text_input("Teacher ID"), st.text_input("Teacher Name"), st.text_input("Teacher Password")
+                if st.form_submit_button("Add Teacher"):
+                    supabase.table("teachers").insert({"id": t_id, "name": t_name, "pass": t_pass}).execute()
+                    st.success("Teacher Added!")
 
-        with t3:
-            st.subheader("📊 Session-wise Fee Monitoring")
-            for _, row in df.iterrows():
-                with st.expander(f"👤 {row['id']} | {row['name']}"):
-                    report = get_monthly_report(row['id'], row['year_of_study'])
-                    cols = st.columns(4)
-                    for i, item in enumerate(report):
-                        with cols[i % 4]:
-                            if item['status'] == "PAID": st.success(f"**{item['label']}**")
-                            else: st.error(f"**{item['label']}**")
+        with tab3:
+            st.subheader("Upload Student Photos for ID")
+            target = st.selectbox("Select Student", df['id'].tolist() if not df.empty else [])
+            photo_file = st.file_uploader("Upload Profile Photo", type=['jpg', 'png'])
+            if st.button("Save Photo") and photo_file:
+                # Upload to Supabase Storage
+                path = f"photos/{target}.jpg"
+                supabase.storage.from_("photos").upload(path, photo_file.getvalue(), {"content-type": "image/jpeg", "x-upsert": "true"})
+                # Update DB with URL
+                public_url = supabase.storage.from_("photos").get_public_url(path)
+                supabase.table("students").update({"profile_photo_url": public_url}).eq("id", target).execute()
+                st.success("Photo Uploaded!")
 
-        # NEW: STUDENT RECORDS TAB LOGIC
-        with t4:
-            st.subheader("📂 Complete Student Directory")
-            if not df.empty:
-                # Filters
-                f1, f2 = st.columns(2)
-                filter_course = f1.multiselect("Filter by Course", COURSES, default=COURSES)
-                filter_year = f2.multiselect("Filter by Year", YEARS, default=YEARS)
-                
-                # Applying Filters
-                filtered_df = df[df['stream'].isin(filter_course) & df['year_of_study'].isin(filter_year)]
-                
-                # Display Summary
-                st.write(f"Showing **{len(filtered_df)}** students.")
-                
-                # Table with Passwords Visible
-                st.table(filtered_df[['id', 'name', 'stream', 'year_of_study', 'phone', 'pass']])
-            else:
-                st.info("No records found.")
+    # --- TEACHER VIEW ---
+    elif st.session_state.auth["role"] == "teacher":
+        st.title(f"👨‍🏫 Teacher Portal: {st.session_state.auth['user']['name']}")
+        tab_a, tab_b = st.tabs(["Take Attendance", "Share Study Material"])
+        
+        with tab_a:
+            sel_course = st.selectbox("Select Course", COURSES)
+            date = st.date_input("Attendance Date")
+            students = supabase.table("students").select("id, name").eq("stream", sel_course).execute().data
+            if students:
+                with st.form("att_form"):
+                    attendance_data = []
+                    for s in students:
+                        status = st.checkbox(f"{s['name']} (Present)", key=s['id'], value=True)
+                        attendance_data.append({"student_id": s['id'], "date": str(date), "status": "Present" if status else "Absent"})
+                    if st.form_submit_button("Save Attendance"):
+                        supabase.table("attendance").insert(attendance_data).execute()
+                        st.success("Attendance Recorded!")
 
+        with tab_b:
+            st.subheader("Upload Notes")
+            file = st.file_uploader("Upload PDF Notes", type=['pdf'])
+            title = st.text_input("Chapter Title")
+            if st.button("Post Material") and file:
+                path = f"notes/{random.randint(100,999)}_{file.name}"
+                supabase.storage.from_("notes").upload(path, file.getvalue())
+                url = supabase.storage.from_("notes").get_public_url(path)
+                supabase.table("study_material").insert({"teacher_id": st.session_state.auth['user']['id'], "title": title, "course": sel_course, "file_url": url}).execute()
+                st.success("Notes Shared!")
+
+    # --- STUDENT VIEW ---
     else:
-        # Student View
         u = st.session_state.auth["user"]
-        st.title(f"👋 Student Portal: {u['name']}")
-        report = get_monthly_report(u['id'], u['year_of_study'])
-        st.subheader("Your Fee Status")
-        cols = st.columns(6)
-        for i, item in enumerate(report):
-            cols[i % 6].write(f"{item['label']}\n{item['status']}")
+        st.title(f"👋 Student Home: {u['name']}")
+        
+        col_1, col_2 = st.columns([1, 2])
+        
+        with col_1:
+            st.subheader("Your ID Card")
+            # Fetch fresh photo URL
+            res = supabase.table("students").select("profile_photo_url").eq("id", u['id']).execute()
+            photo = res.data[0]['profile_photo_url'] if res.data else None
+            
+            if st.button("🪪 Download Official ID Card"):
+                id_pdf = create_id_card(u, photo)
+                st.download_button("Click to Download ID", id_pdf, f"ID_{u['id']}.pdf")
+        
+        with col_2:
+            st.subheader("📚 Study Materials")
+            mats = supabase.table("study_material").select("*").eq("course", u['stream']).execute().data
+            for m in mats:
+                st.markdown(f"📄 **{m['title']}** - [Download PDF]({m['file_url']})")
+                
+            st.divider()
+            st.subheader("📅 Attendance History")
+            att = supabase.table("attendance").select("*").eq("student_id", u['id']).execute().data
+            if att:
+                pres = sum(1 for a in att if a['status'] == 'Present')
+                st.metric("Total Attendance", f"{pres}/{len(att)}")
