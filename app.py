@@ -25,7 +25,7 @@ def fetch_data(table):
         return pd.DataFrame()
 
 def get_monthly_report(student_id, current_year_status):
-    """Calculates status based on 1st/2nd year timelines[cite: 1]."""
+    """Calculates status based on specific course timelines[cite: 1]."""
     try:
         res = supabase.table("fee_records").select("month, year").eq("student_id", student_id).eq("fee_type", "Monthly Fee").execute()
         paid_list = [f"{r['month']} {r['year']}" for r in res.data]
@@ -49,20 +49,37 @@ def get_monthly_report(student_id, current_year_status):
     return report
 
 def create_receipt(s_info, bill):
+    """Generates a detailed PDF receipt[cite: 1]."""
     pdf = FPDF()
     pdf.add_page()
     pdf.rect(5, 5, 200, 287)
     pdf.set_font("Arial", 'B', 20)
     pdf.cell(190, 15, "OXFORD SKILL DEVELOPMENT CENTRE", ln=True, align='C')
     pdf.ln(10)
+    
     r_no = f"OSDC-{random.randint(1000, 9999)}"
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(190, 10, f"PAYMENT RECEIPT: {r_no}", ln=True, align='C', fill=True)
     pdf.ln(10)
+    
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(95, 8, f"Student: {s_info['name']}")
+    pdf.cell(95, 8, f"ID: {s_info['id']}", ln=True)
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(140, 10, "Description / Fee Month", border=1, fill=True)
+    pdf.cell(50, 10, "Amount (INR)", border=1, ln=True, align='C', fill=True)
+    
     pdf.set_font("Arial", '', 11)
-    pdf.cell(190, 8, f"Name: {s_info['name']} | ID: {s_info['id']}", ln=True)
-    pdf.cell(190, 10, f"TOTAL PAID: INR {bill['total']}/-", border=1, ln=True, align='C')
+    description = f"{bill['type']} - {bill['month']} {bill['year']}" # Details added[cite: 1]
+    pdf.cell(140, 12, description, border=1)
+    pdf.cell(50, 12, f"INR {bill['total']}/-", border=1, ln=True, align='C')
+    
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(140, 12, "TOTAL PAID", border=1)
+    pdf.cell(50, 12, f"INR {bill['total']}/-", border=1, ln=True, align='C')
     return pdf.output(dest='S').encode('latin-1'), r_no
 
 # --- 3. MAIN APP ---
@@ -91,7 +108,7 @@ if not st.session_state.auth["logged_in"]:
             if res.data:
                 st.session_state.auth = {"logged_in": True, "role": "student", "user": res.data[0]}
                 st.rerun()
-        st.error("Access Denied: Incorrect ID or Password")
+        st.error("Invalid Credentials")
 
 else:
     if st.sidebar.button("Logout"):
@@ -99,54 +116,51 @@ else:
 
     # --- ADMIN VIEW ---
     if st.session_state.auth["role"] == "admin":
-        st.title("🛡️ Admin Control Panel")
+        st.title("🛡️ Admin Panel")
         df = fetch_data("students")
         t1, t2, t3, t4 = st.tabs(["🆕 Enrollment", "💰 Fees", "📊 Records", "👨‍🏫 Staff"])
         
         with t1:
             with st.form("en"):
                 c1, c2 = st.columns(2)
-                sid, sname = c1.text_input("ID"), c2.text_input("Full Name")
+                sid, sname = c1.text_input("ID"), c2.text_input("Name")
                 strm, yr = c1.selectbox("Course", COURSES), c2.selectbox("Year", YEARS)
-                spass = st.text_input("Password for Student")
-                if st.form_submit_button("Enroll"):
+                spass = st.text_input("Password")
+                if st.form_submit_button("Enroll Student"):
                     supabase.table("students").insert({"id": sid, "name": sname, "pass": spass, "stream": strm, "year_of_study": yr}).execute()
                     st.success("Enrolled!"); st.rerun()
         
         with t2:
             if not df.empty:
-                target = st.selectbox("Student", df['id'].tolist())
-                download_placeholder = st.empty() # Fix for st.download_button in form[cite: 1]
-                
+                target = st.selectbox("Select Student", df['id'].tolist())
+                download_placeholder = st.empty() # Placeholder fix[cite: 1]
                 with st.form("billing"):
                     ftype = st.selectbox("Fee Category", ["Monthly Fee", "Exam Fee", "Admission Fee"])
                     amt = st.number_input("Amount Paid", min_value=0)
                     m = st.selectbox("Month", SESSION_MONTHS)
                     y = st.selectbox("Year", ["2026", "2027", "2028"])
-                    
-                    submitted = st.form_submit_button("Process Payment")
-                    
+                    submitted = st.form_submit_button("Generate Receipt")
                     if submitted:
                         s_row = df[df['id'] == target].iloc[0]
-                        pdf_data, r_no = create_receipt(s_row, {"total": amt})
+                        pdf_data, r_no = create_receipt(s_row, {"total": amt, "type": ftype, "month": m, "year": y})
                         supabase.table("fee_records").insert({
                             "student_id": target, "month": m, "year": y, 
                             "amount_paid": str(amt), "receipt_no": r_no, "fee_type": ftype
                         }).execute()
-                        st.success(f"Recorded! Receipt {r_no} ready below.")
+                        st.success(f"Receipt {r_no} ready.")
                         download_placeholder.download_button("📥 Download Receipt", pdf_data, f"Rec_{r_no}.pdf")
 
         with t3:
             for _, row in df.iterrows():
                 report = get_monthly_report(row['id'], row['year_of_study'])
-                with st.expander(f"👤 {row['name']} | ID: {row['id']} | Pass: {row['pass']}"):
+                with st.expander(f"👤 {row['name']} | ID: {row['id']}"):
                     cols = st.columns(6)
                     for i, item in enumerate(report):
                         if item['status'] == "PAID": cols[i % 6].success(item['label'])
                         else: cols[i % 6].error(item['label'])
 
         with t4:
-            st.subheader("Manage Teacher Accounts[cite: 1]")
+            st.subheader("Manage Teacher Accounts")
             with st.form("t_reg"):
                 tid, tname, tpas = st.text_input("Teacher ID"), st.text_input("Name"), st.text_input("Password")
                 if st.form_submit_button("Create Teacher Account"):
@@ -156,31 +170,25 @@ else:
     # --- TEACHER VIEW ---
     elif st.session_state.auth["role"] == "teacher":
         t_user = st.session_state.auth["user"]
-        st.title(f"👨‍🏫 Welcome, {t_user['name']}[cite: 1]")
-        tab_up, tab_man = st.tabs(["Upload New Notes", "Delete Old Notes[cite: 1]"])
-        
+        st.title(f"👨‍🏫 Welcome, {t_user['name']}")
+        tab_up, tab_man = st.tabs(["Upload New Notes", "Delete Old Notes"])
         with tab_up:
             with st.form("up"):
-                title = st.text_input("Topic Title")
-                crs = st.selectbox("Course", COURSES)
+                title, crs = st.text_input("Title"), st.selectbox("Course", COURSES)
                 file = st.file_uploader("Select PDF", type=["pdf"])
-                if st.form_submit_button("Publish Notes"):
+                if st.form_submit_button("Publish"):
                     if file and title:
                         fname = f"{random.randint(1000,9999)}_{file.name}"
                         path = f"notes/{fname}"
                         supabase.storage.from_("notes").upload(path, file.getvalue())
                         url = supabase.storage.from_("notes").get_public_url(path)
-                        supabase.table("study_material").insert({
-                            "title": title, "course": crs, "file_url": url, 
-                            "teacher_id": t_user['id'], "file_path": path
-                        }).execute()
+                        supabase.table("study_material").insert({"title": title, "course": crs, "file_url": url, "teacher_id": t_user['id'], "file_path": path}).execute()
                         st.success("Published!"); st.rerun()
-
         with tab_man:
             my_notes = supabase.table("study_material").select("*").eq("teacher_id", t_user['id']).execute().data
             for n in my_notes:
                 c1, c2 = st.columns([4, 1])
-                c1.info(f"📄 {n['title']} ({n['course']})")
+                c1.info(f"📄 {n['title']}")
                 if c2.button("Delete", key=n['id']):
                     supabase.storage.from_("notes").remove([n['file_path']])
                     supabase.table("study_material").delete().eq("id", n['id']).execute()
@@ -189,9 +197,8 @@ else:
     # --- STUDENT VIEW ---
     else:
         u = st.session_state.auth["user"]
-        st.title(f"👋 Welcome, {u['name']}[cite: 1]")
-        s_tab1, s_tab2 = st.tabs(["📚 My Notes", "💳 Fee Summary[cite: 1]"])
-        
+        st.title(f"👋 Welcome, {u['name']}")
+        s_tab1, s_tab2 = st.tabs(["📚 My Notes", "💳 Fee Summary"])
         with s_tab1:
             notes = supabase.table("study_material").select("*").eq("course", u['stream']).execute().data
             if notes:
@@ -200,13 +207,10 @@ else:
                     t_name = t_res.data[0]['name'] if t_res.data else "Faculty"
                     st.info(f"📄 **{n['title']}** (By: {t_name})")
                     st.markdown(f"[Download PDF]({n['file_url']})")
-            else: st.write("No notes available yet.")
-
         with s_tab2:
             report = get_monthly_report(u['id'], u['year_of_study'])
             hist = supabase.table("fee_records").select("*").eq("student_id", u['id']).order("created_at", desc=True).execute().data
-            if hist: st.success(f"🗓️ Last Payment Date: {hist[0]['created_at'][:10]}[cite: 1]")
-            
+            if hist: st.success(f"🗓️ Last Payment: {hist[0]['created_at'][:10]}")
             st.subheader("Fee Status Checklist")
             scols = st.columns(4)
             for i, item in enumerate(report):
