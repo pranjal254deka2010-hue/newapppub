@@ -14,9 +14,9 @@ supabase: Client = create_client(URL, KEY)
 COURSES = ["DMLT", "OT Technician", "X-Ray Technician", "First Aid and Patient Care"]
 YEARS = ["1st Year", "2nd Year"]
 
-def fetch_students():
+def fetch_data(table):
     try:
-        res = supabase.table("students").select("*").execute()
+        res = supabase.table(table).select("*").execute()
         return pd.DataFrame(res.data)
     except:
         return pd.DataFrame()
@@ -29,10 +29,12 @@ def get_monthly_report(student_id, current_year_status):
         paid_list = []
     
     report = []
+    # 1st Year: May 2026 - May 2028 (25 months)
     if current_year_status == "1st Year":
         timeline = [ (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"] ] + \
                    [ (m, "2027") for m in ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"] ] + \
                    [ (m, "2028") for m in ["January", "February", "March", "April", "May"] ]
+    # 2nd Year: May 2026 - May 2027 (13 months)[cite: 1]
     else:
         timeline = [ (m, "2026") for m in ["May", "June", "July", "August", "September", "October", "November", "December"] ] + \
                    [ (m, "2027") for m in ["January", "February", "March", "April", "May"] ]
@@ -42,7 +44,7 @@ def get_monthly_report(student_id, current_year_status):
         report.append({"label": label, "status": "PAID" if label in paid_list else "PENDING"})
     return report
 
-# --- 2. MAIN APP ---
+# --- 2. AUTHENTICATION ---
 st.set_page_config(page_title="Oxford ERP", layout="wide")
 
 if 'auth' not in st.session_state:
@@ -58,75 +60,93 @@ if not st.session_state.auth["logged_in"]:
             st.session_state.auth = {"logged_in": True, "role": "admin", "user": "Admin"}
             st.rerun()
         elif role == "Teacher":
-            # Check teachers table in Supabase
             res = supabase.table("teachers").select("*").eq("id", uid).eq("pass", pwd).execute()
             if res.data:
                 st.session_state.auth = {"logged_in": True, "role": "teacher", "user": res.data[0]}
                 st.rerun()
-            else: st.error("Invalid Teacher Credentials")
         else:
             res = supabase.table("students").select("*").eq("id", uid).eq("pass", pwd).execute()
             if res.data:
                 st.session_state.auth = {"logged_in": True, "role": "student", "user": res.data[0]}
                 st.rerun()
-            else: st.error("Invalid Student Credentials")
+        st.error("Invalid Credentials")
 
 else:
     if st.sidebar.button("Logout"):
-        st.session_state.auth = {"logged_in": False, "role": None, "user": None}
-        st.rerun()
+        st.session_state.auth = {"logged_in": False}; st.rerun()
 
-    # --- TEACHER DASHBOARD (UPDATED) ---
+    # --- TEACHER DASHBOARD ---
     if st.session_state.auth["role"] == "teacher":
-        teacher_info = st.session_state.auth["user"]
-        st.title(f"👨‍🏫 Teacher Portal: {teacher_info['name']}")
+        t_info = st.session_state.auth["user"]
+        st.title(f"👨‍🏫 Teacher: {t_info['name']}")
+        tab1, tab2 = st.tabs(["📤 Upload Notes", "🗑️ Manage My Notes"])
         
-        tab_upload, tab_manage = st.tabs(["📤 Upload New Notes", "🗑️ Manage Uploaded Notes"])
-        
-        with tab_upload:
-            with st.form("notes_upload"):
-                title = st.text_input("Notes Title (e.g. Anatomy Chapter 1)")
-                crs = st.selectbox("Assign to Course", COURSES)
-                f = st.file_uploader("Select PDF Note", type=["pdf"])
-                if st.form_submit_button("Publish Note"):
-                    if f and title:
-                        file_name = f"{random.randint(1000,9999)}_{f.name}"
-                        path = f"notes/{file_name}"
-                        # Upload to Storage
+        with tab1:
+            with st.form("upload"):
+                title = st.text_input("Title")
+                crs = st.selectbox("Course", COURSES)
+                f = st.file_uploader("PDF", type=["pdf"])
+                if st.form_submit_button("Publish"):
+                    if f:
+                        fname = f"{random.randint(1000,9999)}_{f.name}"
+                        path = f"notes/{fname}"
                         supabase.storage.from_("notes").upload(path, f.getvalue())
                         url = supabase.storage.from_("notes").get_public_url(path)
-                        # Save Reference with teacher_id
-                        supabase.table("study_material").insert({
-                            "title": title, 
-                            "course": crs, 
-                            "file_url": url, 
-                            "teacher_id": teacher_info['id'],
-                            "file_path": path  # Store path for deletion
-                        }).execute()
-                        st.success(f"Successfully uploaded: {title}")
-                        st.rerun()
-                    else:
-                        st.error("Please provide a title and a PDF file.")
+                        supabase.table("study_material").insert({"title": title, "course": crs, "file_url": url, "teacher_id": t_info['id'], "file_path": path}).execute()
+                        st.success("Uploaded!"); st.rerun()
+        
+        with tab2:
+            my_notes = supabase.table("study_material").select("*").eq("teacher_id", t_info['id']).execute().data
+            for n in my_notes:
+                c1, c2 = st.columns([4, 1])
+                c1.info(f"📄 {n['title']} ({n['course']})")
+                if c2.button("Delete", key=n['id']):
+                    supabase.storage.from_("notes").remove([n['file_path']])
+                    supabase.table("study_material").delete().eq("id", n['id']).execute()
+                    st.rerun()
 
-        with tab_manage:
-            st.subheader("Your Published Materials")
-            # Fetch only notes uploaded by this teacher[cite: 1]
-            my_notes = supabase.table("study_material").select("*").eq("teacher_id", teacher_info['id']).execute().data
-            
-            if my_notes:
-                for n in my_notes:
-                    col_info, col_del = st.columns([4, 1])
-                    col_info.info(f"📄 **{n['title']}** ({n['course']})")
-                    if col_del.button("🗑️ Delete", key=f"del_{n['id']}"):
-                        # 1. Delete from Storage[cite: 1]
-                        if 'file_path' in n and n['file_path']:
-                            supabase.storage.from_("notes").remove([n['file_path']])
-                        # 2. Delete from Database[cite: 1]
-                        supabase.table("study_material").delete().eq("id", n['id']).execute()
-                        st.warning(f"Deleted: {n['title']}")
-                        st.rerun()
-            else:
-                st.write("You haven't uploaded any notes yet.")
+    # --- ADMIN DASHBOARD ---
+    elif st.session_state.auth["role"] == "admin":
+        st.title("🛡️ Admin Panel")
+        df = fetch_data("students")
+        t1, t2, t3 = st.tabs(["🆕 Enrollment", "💰 Payments", "📊 Records"])
+        
+        with t1:
+            with st.form("en"):
+                c1, c2 = st.columns(2)
+                sid, sname = c1.text_input("ID"), c2.text_input("Name")
+                strm, yr = c1.selectbox("Course", COURSES), c2.selectbox("Year", YEARS)
+                spass = st.text_input("Pass")
+                if st.form_submit_button("Enroll"):
+                    supabase.table("students").insert({"id": sid, "name": sname, "pass": spass, "stream": strm, "year_of_study": yr}).execute()
+                    st.success("Enrolled!"); st.rerun()
+        
+        with t2:
+            if not df.empty:
+                target = st.selectbox("Student", df['id'].tolist())
+                with st.form("pay"):
+                    p_type = st.selectbox("Type", ["Monthly Fee", "Exam Fee", "Admission Fee"])
+                    amt = st.number_input("Amount", min_value=0)
+                    m = st.selectbox("Month", ["May", "June", "July", "August", "September", "October", "November", "December", "January", "February", "March", "April"])
+                    y = st.selectbox("Year", ["2026", "2027", "2028"])
+                    if st.form_submit_button("Paid"):
+                        supabase.table("fee_records").insert({"student_id": target, "month": m, "year": y, "amount_paid": str(amt), "fee_type": p_type}).execute()
+                        st.success("Payment Recorded!")
 
-    # --- ADMIN & STUDENT LOGIC REMAINS THE SAME ---
-    # (Insert the Admin and Student logic from the previous code block here)
+        with t3:
+            for _, row in df.iterrows():
+                history = supabase.table("fee_records").select("*").eq("student_id", row['id']).execute().data
+                report = get_monthly_report(row['id'], row['year_of_study'])
+                with st.expander(f"👤 {row['name']} | Pass: {row['pass']}"):
+                    st.write("**Payment Tracker**")
+                    cols = st.columns(4)
+                    for i, item in enumerate(report):
+                        if item['status'] == "PAID": cols[i % 4].success(item['label'])
+                        else: cols[i % 4].error(item['label'])
+
+    # --- STUDENT DASHBOARD ---
+    else:
+        u = st.session_state.auth["user"]
+        st.title(f"👋 Welcome {u['name']}")
+        notes = supabase.table("study_material").select("*").eq("course", u['stream']).execute().data
+        for n in notes: st.info(f"📄 {n['title']} ([Download]({n['file_url']}))")
